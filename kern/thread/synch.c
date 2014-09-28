@@ -163,8 +163,15 @@ lock_create(const char *name)
                 return NULL;
         }
         
-        // add stuff here as needed
-        
+        lock->lock_wchan = wchan_create(lock->lk_name);
+        if (lock->lock_wchan == NULL) {
+            kfree(lock->lk_name);
+            kfree(lock);
+            return NULL;
+        }
+        spinlock_init(&lock->spin_lock);
+        lock->occupied = 0;
+        lock->owner_thread = NULL;
         return lock;
 }
 
@@ -173,7 +180,8 @@ lock_destroy(struct lock *lock)
 {
         KASSERT(lock != NULL);
 
-        // add stuff here as needed
+        spinlock_cleanup(&lock->spin_lock);
+        wchan_destroy(lock->lock_wchan);
         
         kfree(lock->lk_name);
         kfree(lock);
@@ -182,27 +190,47 @@ lock_destroy(struct lock *lock)
 void
 lock_acquire(struct lock *lock)
 {
-        // Write this
+        KASSERT(lock != NULL);
 
-        (void)lock;  // suppress warning until code gets written
+        spinlock_acquire(&lock->spin_lock);
+
+        while(lock->occupied == 1 && lock->owner_thread != curthread) {
+            wchan_lock(lock->lock_wchan);
+            spinlock_release(&lock->spin_lock);
+            wchan_sleep(lock->lock_wchan);
+            spinlock_acquire(&lock->spin_lock);
+        }
+
+        KASSERT((lock->occupied == 0 && lock->owner_thread == NULL) || 
+                (lock->occupied == 1 && lock->owner_thread == curthread));
+
+        lock->occupied = 1;
+        lock->owner_thread = curthread;
+
+        spinlock_release(&lock->spin_lock);
 }
 
 void
 lock_release(struct lock *lock)
 {
-        // Write this
+        KASSERT(lock != NULL);
 
-        (void)lock;  // suppress warning until code gets written
+        KASSERT(curthread == lock->owner_thread);
+
+        spinlock_acquire(&lock->spin_lock);
+
+        lock->occupied = 0;
+        lock->owner_thread = NULL;
+        wchan_wakeone(lock->lock_wchan);
+
+        spinlock_release(&lock->spin_lock);
 }
 
 bool
 lock_do_i_hold(struct lock *lock)
 {
-        // Write this
-
-        (void)lock;  // suppress warning until code gets written
-
-        return true; // dummy until code gets written
+        KASSERT(lock != NULL);
+        return lock->owner_thread == curthread;
 }
 
 ////////////////////////////////////////////////////////////
@@ -226,7 +254,12 @@ cv_create(const char *name)
                 return NULL;
         }
         
-        // add stuff here as needed
+        cv->cv_wchan = wchan_create(cv->cv_name);
+        if (cv->cv_wchan == NULL) {
+            kfree(cv->cv_name);
+            kfree(cv);
+            return NULL;
+        }
         
         return cv;
 }
@@ -235,33 +268,30 @@ void
 cv_destroy(struct cv *cv)
 {
         KASSERT(cv != NULL);
-
-        // add stuff here as needed
-        
         kfree(cv->cv_name);
+        wchan_destroy(cv->cv_wchan);
         kfree(cv);
 }
 
 void
 cv_wait(struct cv *cv, struct lock *lock)
 {
-        // Write this
-        (void)cv;    // suppress warning until code gets written
-        (void)lock;  // suppress warning until code gets written
+        wchan_lock(cv->cv_wchan);
+        lock_release(lock);
+        wchan_sleep(cv->cv_wchan);
+        lock_acquire(lock);
 }
 
 void
 cv_signal(struct cv *cv, struct lock *lock)
 {
-        // Write this
-	(void)cv;    // suppress warning until code gets written
-	(void)lock;  // suppress warning until code gets written
+    wchan_wakeone(cv->cv_wchan);
+    (void) lock;
 }
 
 void
 cv_broadcast(struct cv *cv, struct lock *lock)
 {
-	// Write this
-	(void)cv;    // suppress warning until code gets written
-	(void)lock;  // suppress warning until code gets written
+    wchan_wakeall(cv->cv_wchan);
+    (void) lock;
 }
