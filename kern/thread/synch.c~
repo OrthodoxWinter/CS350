@@ -295,7 +295,6 @@ void
 cv_broadcast(struct cv *cv, struct lock *lock)
 {
     KASSERT(cv != NULL);
-    KASSERT(lock_do_i_hold(lock) == true);
     wchan_wakeall(cv->cv_wchan);
     (void) lock;
 }

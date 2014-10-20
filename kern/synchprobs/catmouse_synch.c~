@@ -19,18 +19,7 @@
 /*
  * replace this with declarations of any synchronization and other variables you need here
  */
-static struct lock **bowlLocks;
-
-//1=cat 2=mouse 0=switching turn
-static volatile int turn;
-
-static volatile int numCreaturesEating;
-
-static struct lock *turnLock;
-
-static struct lock *numCreaturesEatingLock;
-
-static struct cv *noCreatureEating;
+static struct lock *globalCatMouseLock;
 
 
 /* 
@@ -44,22 +33,13 @@ static struct cv *noCreatureEating;
 void
 catmouse_sync_init(int bowls)
 {
-  char lockName[] = "bowl  ";
-  bowlLocks = kmalloc(bowls*sizeof(struct lock *));
-  KASSERT(bowlLocks != NULL);
-  for (int i = 0; i < bowls; i++) {
-  	lockName[5] = i + 48;
-  	bowlLocks[i] = lock_create(lockName);
-  	KASSERT(bowlLocks[i] != NULL);
+  /* replace this default implementation with your own implementation of catmouse_sync_init */
+
+  (void)bowls; /* keep the compiler from complaining about unused parameters */
+  globalCatMouseLock = lock_create("globalCatMouseLock");
+  if (globalCatMouseLock == NULL) {
+    panic("could not create global CatMouse synchronization lock");
   }
-  turn = -1;
-  numCreaturesEating = 0;
-  numCreaturesEatingLock = lock_create("numCreaturesEatingLock");
-  KASSERT(numCreaturesEatingLock != NULL);
-  noCreatureEating = cv_create("noCreatureEating");
-  KASSERT(noCreatureEating != NULL);
-  turnLock = lock_create("turnLock");
-  KASSERT (turnLock != NULL);
   return;
 }
 
@@ -74,17 +54,10 @@ catmouse_sync_init(int bowls)
 void
 catmouse_sync_cleanup(int bowls)
 {
-  KASSERT(bowlLocks != NULL);
-  for (int i = 0; i < bowls; i++) {
-  	lock_destroy(bowlLocks[i]);
-  }
-  kfree(bowlLocks);
-  KASSERT(numCreaturesEatingLock != NULL);
-  lock_destroy(numCreaturesEatingLock);
-  KASSERT(noCreatureEating != NULL);
-  cv_destroy(noCreatureEating);
-  KASSERT(turnLock != NULL);
-  lock_destroy(turnLock);
+  /* replace this default implementation with your own implementation of catmouse_sync_cleanup */
+  (void)bowls; /* keep the compiler from complaining about unused parameters */
+  KASSERT(globalCatMouseLock != NULL);
+  lock_destroy(globalCatMouseLock);
 }
 
 
@@ -103,26 +76,10 @@ catmouse_sync_cleanup(int bowls)
 void
 cat_before_eating(unsigned int bowl) 
 {
-  /*
-  if changing turn then
-    wait unil switching is complete
-  */
-  lock_acquire(bowlLocks[bowl - 1]);
-  lock_acquire(turnLock);
-  lock_acquire(numCreaturesEatingLock);
-  if (turn == -1) {
-  	turn = 1;
-  } else if (turn == 2) {
-  	while (numCreaturesEating > 0) {
-  		cv_wait(noCreatureEating, numCreaturesEatingLock);
-  	}
-  	KASSERT(numCreaturesEating == 0);
-  	turn = 1;
-  }
-  KASSERT(turn == 1);
-  numCreaturesEating++;
-  lock_release(numCreaturesEatingLock);
-  lock_release(turnLock);
+  /* replace this default implementation with your own implementation of cat_before_eating */
+  (void)bowl;  /* keep the compiler from complaining about an unused parameter */
+  KASSERT(globalCatMouseLock != NULL);
+  lock_acquire(globalCatMouseLock);
 }
 
 /*
@@ -141,15 +98,10 @@ cat_before_eating(unsigned int bowl)
 void
 cat_after_eating(unsigned int bowl) 
 {
-  KASSERT(bowlLocks != NULL);
-  KASSERT(numCreaturesEatingLock != NULL);
-  lock_acquire(numCreaturesEatingLock);
-  numCreaturesEating--;
-  if (numCreaturesEating == 0) {
-  	cv_broadcast(noCreatureEating, numCreaturesEatingLock);
-  }
-  lock_release(numCreaturesEatingLock);
-  lock_release(bowlLocks[bowl - 1]);
+  /* replace this default implementation with your own implementation of cat_after_eating */
+  (void)bowl;  /* keep the compiler from complaining about an unused parameter */
+  KASSERT(globalCatMouseLock != NULL);
+  lock_release(globalCatMouseLock);
 }
 
 /*
@@ -167,22 +119,10 @@ cat_after_eating(unsigned int bowl)
 void
 mouse_before_eating(unsigned int bowl) 
 {
-  lock_acquire(bowlLocks[bowl - 1]);
-  lock_acquire(turnLock);
-  lock_acquire(numCreaturesEatingLock);
-  if (turn == -1) {
-  	turn = 2;
-  } else if (turn == 1) {
-  	while (numCreaturesEating > 0) {
-  		cv_wait(noCreatureEating, numCreaturesEatingLock);
-  	}
-  	KASSERT(numCreaturesEating == 0);
-  	turn = 2;
-  }
-  KASSERT(turn == 2);
-  numCreaturesEating++;
-  lock_release(numCreaturesEatingLock);
-  lock_release(turnLock);
+  /* replace this default implementation with your own implementation of mouse_before_eating */
+  (void)bowl;  /* keep the compiler from complaining about an unused parameter */
+  KASSERT(globalCatMouseLock != NULL);
+  lock_acquire(globalCatMouseLock);
 }
 
 /*
@@ -201,13 +141,8 @@ mouse_before_eating(unsigned int bowl)
 void
 mouse_after_eating(unsigned int bowl) 
 {
-  KASSERT(bowlLocks != NULL);
-  KASSERT(numCreaturesEatingLock != NULL);
-  lock_acquire(numCreaturesEatingLock);
-  numCreaturesEating--;
-  if (numCreaturesEating == 0) {
-  	cv_broadcast(noCreatureEating, numCreaturesEatingLock);
-  }
-  lock_release(numCreaturesEatingLock);
-  lock_release(bowlLocks[bowl - 1]);
+  /* replace this default implementation with your own implementation of mouse_after_eating */
+  (void)bowl;  /* keep the compiler from complaining about an unused parameter */
+  KASSERT(globalCatMouseSem != NULL);
+  V(globalCatMouseSem);
 }
