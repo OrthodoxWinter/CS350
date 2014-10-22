@@ -50,6 +50,7 @@
 #include <vfs.h>
 #include <synch.h>
 #include <kern/fcntl.h>  
+#include <limits.h>
 
 /*
  * The process for the kernel; this holds all the kernel-only threads.
@@ -208,6 +209,75 @@ proc_bootstrap(void)
     panic("could not create no_proc_sem semaphore\n");
   }
 #endif // UW 
+
+#ifdef UW
+	proctable = proc_table_create("proctable");
+	if (proctable == NULL) {
+		panic("could not create proctable");
+	}
+	proctable_lock = lock_create("proctable_lock");
+	if (proctable_lock == NULL) {
+		panic("could not create proctable_lock lock");
+	}
+#endif
+}
+
+pid_t get_free_pid(void) {
+	KASSERT(proctable != NULL);
+	if (proctable->num == 0) {
+		return __PID_MIN;
+	} else {
+		pid_t new_pid = 0;
+		lock_acquire(proctable_lock);
+		int proctable_size = proctable->num;
+		for (int i = 0; i < proctable_size; i++) {
+			proc_info *info = proctable->v[i];
+			if (info == NULL) {
+				new_pid = (pid_t) (i + __PID_MIN);
+			}
+		}
+		if (new_pid == 0) {
+			if (proctable_size < (__PID_MAX - __PID_MIN + 1)) {
+				struct proc_info *new_info = kmalloc(sizeof(struct proc_info));
+				new_info->parent_pid = 0;
+				new_info->exited = 0;
+				new_info->exit_code = 0;
+				proc_table_add(proctable, new_info, proctable_size);
+				new_pid = (pid_t) (proctable_size + __PID_MIN);
+			}
+		}
+		lock_release("proctable_lock");
+		return new_pid;
+	}
+}
+
+struct proc_info *
+get_proc_info(pid_t pid) {
+	int index = (int) pid - __PID_MIN;
+	if (index < proctable->num && index >= 0) {
+		return proctable->v[index];
+	} else {
+		return NULL;
+	}
+}
+
+void
+set_proc_info(struct proc_info *info, pid_t pid) {
+	if (pid >= __PID_MIN  && pid < __PID_MAX) {
+		int index = (int) pid - __PID_MIN;
+		if (index >= 0 && index < proctable->num) {
+			proctable->v[index] = info;
+		}
+	}
+}
+
+void
+free_pid(pid_t pid) {
+	if (pid >= __PID_MIN  && pid < proctable->num) {
+		struct proc_info *info = get_proc_info(pid);
+		kfree(info);
+		set_proc_info(NULL, pid);
+	}
 }
 
 /*
@@ -222,10 +292,17 @@ proc_create_runprogram(const char *name)
 	struct proc *proc;
 	char *console_path;
 
-	proc = proc_create(name);
-	if (proc == NULL) {
+	pid_t pid = find_free_pid();
+	if (pid == 0) {
 		return NULL;
 	}
+	proc = proc_create(name);
+	if (proc == NULL) {
+		free_pid(pid);
+		return NULL;
+	}
+	proc->pid = pid;
+	proc->forked_child = 0;
 
 #ifdef UW
 	/* open the console - this should always succeed */

@@ -38,12 +38,23 @@
 
 #include <spinlock.h>
 #include <thread.h> /* required for struct threadarray */
+#include <types.h>
+#include <array.h>
 
 struct addrspace;
 struct vnode;
 #ifdef UW
 struct semaphore;
+struct cv;
+struct lock;
 #endif // UW
+
+#ifndef PROCTABLELINE
+#define PROCTABLELINE INLINE
+#endif
+
+DECLARRAY_BYTYPE(proc_table, struct proc_info);
+DEFARRAY_BYTYPE(proc_table, struct proc_info, PROCTABLELINE);
 
 /*
  * Process structure.
@@ -68,7 +79,14 @@ struct proc {
   struct vnode *console;                /* a vnode for the console device */
 #endif
 
-	/* add more material here as needed */
+	pid_t pid;
+	int forked_child;
+};
+
+struct proc_info {
+	pid_t parent_pid;
+	int exited;
+	int exit_code;
 };
 
 /* This is the process structure for the kernel and for kernel-only threads. */
@@ -78,6 +96,11 @@ extern struct proc *kproc;
 #ifdef UW
 extern struct semaphore *no_proc_sem;
 #endif // UW
+
+#ifdef UW
+extern struct proc_table* proctable;
+extern struct lock *proctable_lock;
+#endif
 
 /* Call once during system startup to allocate data structures. */
 void proc_bootstrap(void);
