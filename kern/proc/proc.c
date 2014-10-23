@@ -42,6 +42,8 @@
  * process that will have more than one thread is the kernel process.
  */
 
+#define PROCTABLELINE
+
 #include <types.h>
 #include <proc.h>
 #include <current.h>
@@ -68,6 +70,10 @@ static unsigned int proc_count;
 static struct semaphore *proc_count_mutex;
 /* used to signal the kernel menu thread when there are no processes */
 struct semaphore *no_proc_sem;   
+
+struct proc_table* proctable;
+struct lock *proctable_lock;
+
 #endif  // UW
 
 
@@ -211,7 +217,7 @@ proc_bootstrap(void)
 #endif // UW 
 
 #ifdef UW
-	proctable = proc_table_create("proctable");
+	proctable = proc_table_create();
 	if (proctable == NULL) {
 		panic("could not create proctable");
 	}
@@ -224,59 +230,56 @@ proc_bootstrap(void)
 
 pid_t get_free_pid(void) {
 	KASSERT(proctable != NULL);
-	if (proctable->num == 0) {
-		return __PID_MIN;
-	} else {
-		pid_t new_pid = 0;
-		lock_acquire(proctable_lock);
-		int proctable_size = proctable->num;
-		for (int i = 0; i < proctable_size; i++) {
-			proc_info *info = proctable->v[i];
-			if (info == NULL) {
-				new_pid = (pid_t) (i + __PID_MIN);
-			}
+	pid_t new_pid = 0;
+	unsigned int proctable_size = proc_table_num(proctable);
+	for (unsigned int i = 0; i < proctable_size; i++) {
+		struct proc_info *info = proc_table_get(proctable, i);
+		if (info->pid_free == 1) {
+			info->pid_free = 0;
+			info->parent_pid = 0;
+			info->exited = 0;
+			info->exit_code = 0;
+			new_pid = (pid_t) (i + __PID_MIN);
+			//kprintf("found free pid %d\n", (int) new_pid);
+			break;
 		}
-		if (new_pid == 0) {
-			if (proctable_size < (__PID_MAX - __PID_MIN + 1)) {
-				struct proc_info *new_info = kmalloc(sizeof(struct proc_info));
-				new_info->parent_pid = 0;
-				new_info->exited = 0;
-				new_info->exit_code = 0;
-				proc_table_add(proctable, new_info, proctable_size);
-				new_pid = (pid_t) (proctable_size + __PID_MIN);
-			}
-		}
-		lock_release("proctable_lock");
-		return new_pid;
 	}
+	if (new_pid == 0) {
+		if (proctable_size < (__PID_MAX - __PID_MIN + 1)) {
+			struct proc_info *new_info = kmalloc(sizeof(struct proc_info));
+			new_info->pid_free = 0;
+			new_info->parent_pid = 0;
+			new_info->exited = 0;
+			new_info->exit_code = 0;
+			new_info->proc_exit = cv_create("proctable_cv");
+			proc_table_add(proctable, new_info, &proctable_size);
+			new_pid = (pid_t) (proctable_size + __PID_MIN);
+			//kprintf("Added new pid %d\n", new_pid);
+		}
+	}
+	return new_pid;
 }
 
 struct proc_info *
 get_proc_info(pid_t pid) {
-	int index = (int) pid - __PID_MIN;
-	if (index < proctable->num && index >= 0) {
-		return proctable->v[index];
+	unsigned int index = (int) pid - __PID_MIN;
+	if (index < proc_table_num(proctable)  && pid >= __PID_MIN) {
+		return proc_table_get(proctable, index);
 	} else {
 		return NULL;
 	}
 }
 
 void
-set_proc_info(struct proc_info *info, pid_t pid) {
-	if (pid >= __PID_MIN  && pid < __PID_MAX) {
-		int index = (int) pid - __PID_MIN;
-		if (index >= 0 && index < proctable->num) {
-			proctable->v[index] = info;
-		}
-	}
-}
-
-void
 free_pid(pid_t pid) {
-	if (pid >= __PID_MIN  && pid < proctable->num) {
-		struct proc_info *info = get_proc_info(pid);
-		kfree(info);
-		set_proc_info(NULL, pid);
+	unsigned int index = (unsigned int) pid - __PID_MIN;
+	if (index < proc_table_num(proctable) && pid >= __PID_MIN) {
+		struct proc_info *info = proc_table_get(proctable, index);
+		info->pid_free = 1;
+		info->parent_pid = 0;
+		info->exited = -1;
+		info->exit_code = 0;
+		//kprintf("freed pid %d\n", (int) pid);
 	}
 }
 
@@ -291,14 +294,18 @@ proc_create_runprogram(const char *name)
 {
 	struct proc *proc;
 	char *console_path;
-
-	pid_t pid = find_free_pid();
+	lock_acquire(proctable_lock);
+	pid_t pid = get_free_pid();
+	//kprintf("new pid %d \n", (int) pid);
+	lock_release(proctable_lock);
 	if (pid == 0) {
 		return NULL;
 	}
 	proc = proc_create(name);
 	if (proc == NULL) {
+		lock_acquire(proctable_lock);
 		free_pid(pid);
+		lock_release(proctable_lock);
 		return NULL;
 	}
 	proc->pid = pid;
