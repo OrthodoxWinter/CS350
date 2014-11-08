@@ -262,6 +262,7 @@ pid_t get_free_pid(void) {
 
 struct proc_info *
 get_proc_info(pid_t pid) {
+	//kprintf("get_proc_info called on pid %d\n", (int) pid);
 	unsigned int index = (int) pid - __PID_MIN;
 	if (index < proc_table_num(proctable)  && pid >= __PID_MIN) {
 		return proc_table_get(proctable, index);

@@ -11,6 +11,8 @@
 #include <copyinout.h>
 #include <synch.h>
 #include <mips/trapframe.h>
+#include <vfs.h>
+#include <kern/fcntl.h>
 
   /* this implementation of sys__exit does not do anything with the exit code */
   /* this needs to be fixed to get exit() and waitpid() working properly */
@@ -97,7 +99,9 @@ sys_getpid(pid_t *retval)
 {
   /* for now, this is just a stub that always returns a PID of 1 */
   /* you need to fix this to make it work properly */
+  spinlock_acquire(&curproc->p_lock);
   *retval = curproc->pid;
+  spinlock_release(&curproc->p_lock);
   return(0);
 }
 
@@ -109,6 +113,7 @@ sys_waitpid(pid_t pid,
 	    int options,
 	    pid_t *retval)
 {
+  //kprintf("waitpid called on pid %d\n", (int) pid);
   int exitstatus = 0;
   int result = 0;
 
@@ -120,10 +125,16 @@ sys_waitpid(pid_t pid,
   spinlock_release(&curproc->p_lock);
   
   lock_acquire(proctable_lock);
+  //kprintf("getting proc info for pid %d\n", (int) pid);
   struct proc_info* info = get_proc_info(pid);
+  if (info == NULL || info->pid_free == 1) {
+    //kprintf("ESRCH\n");
+    lock_release(proctable_lock);
+    return ESRCH;
+  }
   if (info->parent_pid != current_pid) {
-    //change this to the correct error number
-    result = EINVAL;
+    lock_release(proctable_lock);
+    return ECHILD;
   } else {
     if (info->exited == 1) {
       exitstatus = _MKWVAL(info->exit_code);
@@ -132,43 +143,51 @@ sys_waitpid(pid_t pid,
       while (info->exited == 0) {
         cv_wait(info->proc_exit, proctable_lock);
       }
-      if (info->exited == 1) {
-        exitstatus = _MKWVAL(info->exit_code);
-        result = copyout((void *)&exitstatus,status,sizeof(int));
-      } else {
-        result = 1;
-      }
+      exitstatus = _MKWVAL(info->exit_code);
+      result = copyout((void *)&exitstatus,status,sizeof(int));
     }
   }
   lock_release(proctable_lock);
   *retval = pid;
-  return(0);
+  return result;
 }
 
 int
 sys_fork(struct trapframe *tf, pid_t *retval) {
   //kprintf("sys_fork called\n");
-  
-  struct trapframe *temp = kmalloc(sizeof(struct trapframe));
-  memcpy(temp, tf, sizeof(struct trapframe));
 
-  struct addrspace *copyAddrspace;
+  struct addrspace* copyAddrspace;
   //Acquire the curent proc
   spinlock_acquire(&curproc->p_lock);
+  int copy_success = as_copy(curproc->p_addrspace, &copyAddrspace);
+  char* curproc_name = curproc->p_name;
+  pid_t curproc_pid = curproc->pid;
+  spinlock_release(&curproc->p_lock);
   //get a copy of the current proc's address space
-  as_copy(curproc->p_addrspace, &copyAddrspace);
+  
+  if (copy_success != 0) {
+    return ENOMEM;
+  }
   //create a new child proc
-  struct proc *childProc = proc_create_runprogram(curproc->p_name);
-
+  struct proc *childProc = proc_create_runprogram(curproc_name);
+  if (childProc == NULL) {
+    as_destroy(copyAddrspace);
+    return ENPROC;
+  }
   lock_acquire(proctable_lock);
   struct proc_info* info = get_proc_info(childProc->pid);
-  info->parent_pid = curproc->pid;
+  info->parent_pid = curproc_pid;
   lock_release(proctable_lock);
-  curproc->forked_child = 1;
 
+  spinlock_acquire(&curproc->p_lock);
+  curproc->forked_child = 1;
   spinlock_release(&curproc->p_lock);
+
   childProc->p_addrspace = copyAddrspace;
   
+  struct trapframe* temp = kmalloc(sizeof(struct trapframe));
+  memcpy(temp, tf, sizeof(struct trapframe));
+
   thread_fork(curthread->t_name, childProc, dupProc, temp, 0);
   //wait until the new proc finishes copying the trapframe and addrspace, then return the pid of the child proc
   *retval = childProc->pid;
@@ -184,4 +203,65 @@ void dupProc(void *temp, unsigned long unused) {
   as_activate();
   enter_forked_process(&tf);
 }
+
+int sys_execv(userptr_t progname, userptr_t args) {
+  (void) args;
+  struct addrspace* as;
+  struct vnode* v;
+  vaddr_t entrypoint, stackptr;
+  int result;
+
+  size_t progname_len = 0;
+  char* new_progname = kmalloc(1024*sizeof(char));
+  copyinstr(progname, new_progname, 1024, &progname_len);
+
+  result = vfs_open(new_progname, O_RDONLY, 0, &v);
+  if (result) {
+    return result;
+  }
+
+  as = as_create();
+  if (as ==NULL) {
+    vfs_close(v);
+    return ENOMEM;
+  }
+
+  as_deactivate();
+
+  /* Switch to it and activate it. */
+  struct addrspace* oldas = curproc_setas(as);
+  
+  as_destroy(oldas);
+
+  as_activate();
+
+  /* Load the executable. */
+  result = load_elf(v, &entrypoint);
+  if (result) {
+    /* p_addrspace will go away when curproc is destroyed */
+    vfs_close(v);
+    return result;
+  }
+
+  /* Done with the file now. */
+  vfs_close(v);
+
+  /* Define the user stack in the address space */
+  result = as_define_stack(as, &stackptr);
+  if (result) {
+    /* p_addrspace will go away when curproc is destroyed */
+    return result;
+  }
+
+  kfree(new_progname);
+
+  /* Warp to user mode. */
+  enter_new_process(0 /*argc*/, NULL /*userspace addr of argv*/,
+        stackptr, entrypoint);
+  
+  /* enter_new_process does not return. */
+  panic("enter_new_process returned\n");
+  return EINVAL;
+}
+
 
