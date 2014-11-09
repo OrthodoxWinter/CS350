@@ -13,6 +13,7 @@
 #include <mips/trapframe.h>
 #include <vfs.h>
 #include <kern/fcntl.h>
+#include <limits.h>
 
   /* this implementation of sys__exit does not do anything with the exit code */
   /* this needs to be fixed to get exit() and waitpid() working properly */
@@ -204,16 +205,33 @@ void dupProc(void *temp, unsigned long unused) {
   enter_forked_process(&tf);
 }
 
-int sys_execv(userptr_t progname, userptr_t args) {
-  (void) args;
+int sys_execv(userptr_t progname, userptr_t* args) {
   struct addrspace* as;
   struct vnode* v;
   vaddr_t entrypoint, stackptr;
   int result;
 
   size_t progname_len = 0;
-  char* new_progname = kmalloc(1024*sizeof(char));
-  copyinstr(progname, new_progname, 1024, &progname_len);
+  char* new_progname = kmalloc(NAME_MAX*sizeof(char));
+  copyinstr(progname, new_progname, NAME_MAX, &progname_len);
+
+  int num_args = 0;
+
+  while (args[num_args] != NULL) {
+    num_args++;
+  }
+  //kprintf("num_args: %d\n", num_args);
+
+  char** new_args = kmalloc((num_args + 1) * sizeof(char*));
+  size_t args_str_len[num_args];
+
+  int i = 0;
+  for (i = 0; i < num_args; i++) {
+    new_args[i] = kmalloc(1024 * sizeof(char));
+    copyinstr(args[i], new_args[i], 1024, (args_str_len+i));
+    //kprintf(new_args[i]);
+  }
+  new_args[i] = NULL;
 
   result = vfs_open(new_progname, O_RDONLY, 0, &v);
   if (result) {
@@ -248,16 +266,55 @@ int sys_execv(userptr_t progname, userptr_t args) {
 
   /* Define the user stack in the address space */
   result = as_define_stack(as, &stackptr);
+
   if (result) {
     /* p_addrspace will go away when curproc is destroyed */
     return result;
   }
 
+  size_t total_args_size = 0;
+
+  for (int i = 0; i < num_args; i++) {
+    total_args_size+= args_str_len[i];
+  }
+
+  total_args_size = ROUNDUP(total_args_size, 8);
+
+  //kprintf("stackptr: %u\n", (unsigned int) stackptr);
+  //kprintf("total_args_size: %u\n", (unsigned int) total_args_size);
+
+  userptr_t args_str_addr = (userptr_t) stackptr - total_args_size;
+  //kprintf("args_str_addr: %u\n", (unsigned int) args_str_addr);
+
+  size_t args_array_size = ROUNDUP(4*(num_args + 1), 8);
+  //kprintf("args_array_size: %u\n", (unsigned int) args_array_size);
+
+  userptr_t args_array_addr = (userptr_t) args_str_addr - args_array_size;
+  vaddr_t new_stack_ptr = (vaddr_t) args_array_addr;
+  //kprintf("args_array_addr: %u\n", (unsigned int) args_array_addr);
+
+  for (int i = 0; i < num_args; i++) {
+    size_t length = 0;
+    copyoutstr(new_args[i], args_str_addr, 1024, &length);
+    KASSERT(length == args_str_len[i]);
+    copyout((void*) &args_str_addr, args_array_addr, 4);
+    args_array_addr += 4;
+    args_str_addr += length;
+  }
+
+  void* empty = NULL;
+  copyout(empty, (userptr_t) args_array_addr, 4);
+
   kfree(new_progname);
 
+  for (int i = 0; i < num_args; i++) {
+    kfree(new_args[i]);
+  }
+  kfree(new_args);
+
   /* Warp to user mode. */
-  enter_new_process(0 /*argc*/, NULL /*userspace addr of argv*/,
-        stackptr, entrypoint);
+  enter_new_process(num_args /*argc*/, (userptr_t) new_stack_ptr /*userspace addr of argv*/,
+        new_stack_ptr, entrypoint);
   
   /* enter_new_process does not return. */
   panic("enter_new_process returned\n");
