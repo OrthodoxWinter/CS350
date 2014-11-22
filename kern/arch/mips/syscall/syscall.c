@@ -35,6 +35,7 @@
 #include <thread.h>
 #include <current.h>
 #include <syscall.h>
+#include <kern/wait.h>
 
 
 /*
@@ -116,7 +117,7 @@ syscall(struct trapframe *tf)
 			  (int *)(&retval));
 	  break;
 	case SYS__exit:
-	  sys__exit((int)tf->tf_a0);
+	  sys__exit((int) _MKWAIT_EXIT(tf->tf_a0));
 	  /* sys__exit does not return, execution should not get here */
 	  panic("unexpected return from sys__exit");
 	  break;

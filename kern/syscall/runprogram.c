@@ -44,6 +44,7 @@
 #include <vfs.h>
 #include <syscall.h>
 #include <test.h>
+#include <copyinout.h>
 
 /*
  * Load program "progname" and start running it in usermode.
@@ -52,7 +53,7 @@
  * Calls vfs_open on progname and thus may destroy it.
  */
 int
-runprogram(char *progname)
+runprogram(char *progname, char** args, int num_args)
 {
 	struct addrspace *as;
 	struct vnode *v;
@@ -97,12 +98,40 @@ runprogram(char *progname)
 		return result;
 	}
 
-	/* Warp to user mode. */
-	enter_new_process(0 /*argc*/, NULL /*userspace addr of argv*/,
-			  stackptr, entrypoint);
-	
-	/* enter_new_process does not return. */
-	panic("enter_new_process returned\n");
-	return EINVAL;
+	size_t total_args_size = 0;
+
+    for (int i = 0; i < num_args; i++) {
+      total_args_size+= strlen(args[i]) + 1;
+    }
+
+    total_args_size = ROUNDUP(total_args_size, 8);
+
+  	userptr_t args_str_addr = (userptr_t) stackptr - total_args_size;
+
+  	size_t args_array_size = ROUNDUP(4*(num_args + 1), 8);
+
+  	userptr_t args_array_addr = (userptr_t) args_str_addr - args_array_size;
+  	vaddr_t new_stack_ptr = (vaddr_t) args_array_addr;
+
+  	for (int i = 0; i < num_args; i++) {
+	  size_t length = 0;
+	  unsigned int str_len = strlen(args[i]) + 1;
+	  copyoutstr(args[i], args_str_addr, 1024, &length);
+	  KASSERT(length == str_len);
+      copyout((void*) &args_str_addr, args_array_addr, 4);
+      args_array_addr += 4;
+      args_str_addr += length;
+    }
+
+  	void* empty = NULL;
+	copyout(empty, (userptr_t) args_array_addr, 4);
+
+   /* Warp to user mode. */
+  	enter_new_process(num_args /*argc*/, (userptr_t) new_stack_ptr /*userspace addr of argv*/,
+        new_stack_ptr, entrypoint);
+  
+  	/* enter_new_process does not return. */
+  	panic("enter_new_process returned\n");
+  	return EINVAL;
 }
 

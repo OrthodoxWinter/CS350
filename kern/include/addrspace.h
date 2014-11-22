@@ -47,6 +47,17 @@ struct vnode;
  * You write this.
  */
 
+struct pagetable {
+  vaddr_t vbase;
+  size_t tablesize;
+  paddr_t *entries;
+};
+
+struct coremap_entries {
+  int occupied;
+  int cont_blocks;
+};
+
 struct addrspace {
   vaddr_t as_vbase1;
   paddr_t as_pbase1;
@@ -55,7 +66,10 @@ struct addrspace {
   paddr_t as_pbase2;
   size_t as_npages2;
   paddr_t as_stackpbase;
+  int elf_loaded;
 };
+
+
 
 /*
  * Functions in addrspace.c:

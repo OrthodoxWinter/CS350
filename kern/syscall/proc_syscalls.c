@@ -138,13 +138,13 @@ sys_waitpid(pid_t pid,
     return ECHILD;
   } else {
     if (info->exited == 1) {
-      exitstatus = _MKWVAL(info->exit_code);
+      exitstatus = info->exit_code;
       result = copyout((void *)&exitstatus,status,sizeof(int));
     } else {
       while (info->exited == 0) {
         cv_wait(info->proc_exit, proctable_lock);
       }
-      exitstatus = _MKWVAL(info->exit_code);
+      exitstatus = info->exit_code;
       result = copyout((void *)&exitstatus,status,sizeof(int));
     }
   }

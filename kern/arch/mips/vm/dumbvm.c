@@ -37,6 +37,7 @@
 #include <mips/tlb.h>
 #include <addrspace.h>
 #include <vm.h>
+#include <mips/vm.h>
 
 /*
  * Dumb MIPS-only "VM system" that is intended to only be just barely
@@ -53,10 +54,15 @@
  */
 static struct spinlock stealmem_lock = SPINLOCK_INITIALIZER;
 
+//static paddr_t pframe_base;
+//static struct coremap_entries* coremap;
+
 void
 vm_bootstrap(void)
 {
-	/* Do nothing. */
+	//paddr_t free_mem_start;
+	//paddr_t free_mem_end;
+	//ram_getsize(&free_mem_start, &free_mem_end);
 }
 
 static
@@ -115,6 +121,7 @@ vm_fault(int faulttype, vaddr_t faultaddress)
 	uint32_t ehi, elo;
 	struct addrspace *as;
 	int spl;
+	int faultaddress_section;
 
 	faultaddress &= PAGE_FRAME;
 
@@ -122,8 +129,7 @@ vm_fault(int faulttype, vaddr_t faultaddress)
 
 	switch (faulttype) {
 	    case VM_FAULT_READONLY:
-		/* We always create pages read-write, so we can't get this */
-		panic("dumbvm: got VM_FAULT_READONLY\n");
+		return EFAULT;
 	    case VM_FAULT_READ:
 	    case VM_FAULT_WRITE:
 		break;
@@ -172,16 +178,21 @@ vm_fault(int faulttype, vaddr_t faultaddress)
 
 	if (faultaddress >= vbase1 && faultaddress < vtop1) {
 		paddr = (faultaddress - vbase1) + as->as_pbase1;
+		faultaddress_section = 1;
 	}
 	else if (faultaddress >= vbase2 && faultaddress < vtop2) {
 		paddr = (faultaddress - vbase2) + as->as_pbase2;
+		faultaddress_section = 2;
 	}
 	else if (faultaddress >= stackbase && faultaddress < stacktop) {
 		paddr = (faultaddress - stackbase) + as->as_stackpbase;
+		faultaddress_section = 3;
 	}
 	else {
 		return EFAULT;
 	}
+
+  	int elf_loaded = as->elf_loaded;
 
 	/* make sure it's page-aligned */
 	KASSERT((paddr & PAGE_FRAME) == paddr);
@@ -196,15 +207,23 @@ vm_fault(int faulttype, vaddr_t faultaddress)
 		}
 		ehi = faultaddress;
 		elo = paddr | TLBLO_DIRTY | TLBLO_VALID;
+		if (faultaddress_section == 1 && elf_loaded != 0) {
+			elo &= ~TLBLO_DIRTY;
+		}
 		DEBUG(DB_VM, "dumbvm: 0x%x -> 0x%x\n", faultaddress, paddr);
 		tlb_write(ehi, elo, i);
 		splx(spl);
 		return 0;
 	}
 
-	kprintf("dumbvm: Ran out of TLB entries - cannot handle page fault\n");
+	ehi = faultaddress;
+	elo = paddr | TLBLO_DIRTY | TLBLO_VALID;
+	if (faultaddress_section == 1 && elf_loaded != 0) {
+		elo &= ~TLBLO_DIRTY;
+	}
+	tlb_random(ehi, elo);
 	splx(spl);
-	return EFAULT;
+	return 0;
 }
 
 struct addrspace *
@@ -222,7 +241,7 @@ as_create(void)
 	as->as_pbase2 = 0;
 	as->as_npages2 = 0;
 	as->as_stackpbase = 0;
-
+	as->elf_loaded = 0;
 	return as;
 }
 
@@ -340,7 +359,8 @@ as_prepare_load(struct addrspace *as)
 int
 as_complete_load(struct addrspace *as)
 {
-	(void)as;
+	as->elf_loaded = 1;
+	as_activate();
 	return 0;
 }
 
